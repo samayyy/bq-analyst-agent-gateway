@@ -8,6 +8,16 @@ and authenticates with whatever identity Application Default Credentials resolve
 """
 
 import os
+
+# Behind Agent Gateway, client-cert mTLS paths lose the hostname at the gateway
+# (CONNECT to a 240.0.0.x virtual IP -> matched by default_denied), so every
+# *.mtls.googleapis.com call fails. Force-disable client certificates BEFORE
+# any google-auth/genai client is created in this process -- this covers the
+# runtime wrapper's own session/telemetry clients too, and wins even if the
+# platform injects a different value into the container env. The gateway
+# authorizes agents via IAP/DPoP, not client certs. See AGENT_GATEWAY.md.
+os.environ["GOOGLE_API_USE_CLIENT_CERTIFICATE"] = "false"
+
 import threading
 from functools import cached_property
 from typing import Any, Dict
@@ -107,10 +117,19 @@ def auth_diagnostics() -> Dict[str, Any]:
 
     import httpx
 
+    from google.auth.transport import mtls as _mtls
+
     report: Dict[str, Any] = {
         "GOOGLE_API_PREVENT_AGENT_TOKEN_SHARING_FOR_GCP_SERVICES": os.environ.get(
             "GOOGLE_API_PREVENT_AGENT_TOKEN_SHARING_FOR_GCP_SERVICES", "<unset>"
         ),
+        "GOOGLE_API_USE_CLIENT_CERTIFICATE": os.environ.get(
+            "GOOGLE_API_USE_CLIENT_CERTIFICATE", "<unset>"
+        ),
+        "GOOGLE_API_USE_MTLS_ENDPOINT": os.environ.get(
+            "GOOGLE_API_USE_MTLS_ENDPOINT", "<unset>"
+        ),
+        "should_use_client_cert": _mtls.should_use_client_cert(),
         "GOOGLE_API_CERTIFICATE_CONFIG": os.environ.get(
             "GOOGLE_API_CERTIFICATE_CONFIG", "<unset>"
         ),
