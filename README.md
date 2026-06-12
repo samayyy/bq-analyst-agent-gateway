@@ -7,6 +7,10 @@ Kit (ADK), connected to **Google's managed BigQuery MCP server**
 
 > **Deploying this into your own project?** Follow the step-by-step runbook in
 > [DEPLOYMENT.md](DEPLOYMENT.md).
+>
+> **This branch (`agent-gateway`)** additionally routes all of the agent's MCP
+> traffic through a Google Cloud **Agent Gateway** (Agent-to-Anywhere, Private
+> Preview) — see [AGENT_GATEWAY.md](AGENT_GATEWAY.md) for the gateway runbook.
 
 ## Architecture
 

@@ -1,3 +1,5 @@
 google-adk[a2a,mcp]==2.2.0
-google-cloud-aiplatform[agent_engines]>=1.112
+# >=1.148.1 required: AgentEngineConfig gained agent_gateway_config in 1.148.0,
+# and deploy-time validation happens client-side (pydantic extra='forbid').
+google-cloud-aiplatform[agent_engines]>=1.148.1
 google-auth>=2.40.0

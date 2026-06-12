@@ -1,3 +1,8 @@
 {
-  "identity_type": "AGENT_IDENTITY"
+  "identity_type": "AGENT_IDENTITY",
+  "agent_gateway_config": {
+    "agent_to_anywhere_config": {
+      "agent_gateway": "projects/YOUR_PROJECT_ID/locations/YOUR_REGION/agentGateways/YOUR_GATEWAY_ID"
+    }
+  }
 }
