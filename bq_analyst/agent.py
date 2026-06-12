@@ -9,14 +9,13 @@ and authenticates with whatever identity Application Default Credentials resolve
 
 import os
 
-# Behind Agent Gateway, client-cert mTLS paths lose the hostname at the gateway
-# (CONNECT to a 240.0.0.x virtual IP -> matched by default_denied), so every
-# *.mtls.googleapis.com call fails. Force-disable client certificates BEFORE
-# any google-auth/genai client is created in this process -- this covers the
-# runtime wrapper's own session/telemetry clients too, and wins even if the
-# platform injects a different value into the container env. The gateway
-# authorizes agents via IAP/DPoP, not client certs. See AGENT_GATEWAY.md.
-os.environ["GOOGLE_API_USE_CLIENT_CERTIFICATE"] = "false"
+# NOTE for gateway-bound deployments: do NOT disable client certificates
+# (GOOGLE_API_USE_CLIENT_CERTIFICATE). The agent->gateway leg IS the client-cert
+# mTLS channel; with certs off the runtime dials plain hostnames and gets
+# "Network is unreachable" (no direct egress exists). The *.mtls.googleapis.com
+# hostnames must instead be registered in the Agent Registry, and gateway-log
+# CONNECT/default_denied records are ignorable outer-tunnel noise.
+# See AGENT_GATEWAY.md.
 
 import threading
 from functools import cached_property
