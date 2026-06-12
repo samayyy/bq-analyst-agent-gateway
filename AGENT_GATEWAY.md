@@ -62,6 +62,30 @@ Expect: `governedAccessPath: AGENT_TO_ANYWHERE`, `protocols:` including `MCP`,
 and `registries:` containing
 `//agentregistry.googleapis.com/projects/$PROJECT_ID/locations/$REGION`.
 
+**⚠️ Registry scope is the #1 silent killer**: if `registries:` points at
+`locations/global` (the Gemini Enterprise scope), the gateway consults a
+registry where none of your regional registrations exist and **default-denies
+all egress** — symptoms look like TLS/network failures inside the container.
+For Agent Runtime the gateway must reference the REGIONAL registry. Fix by
+re-importing the gateway YAML:
+
+```bash
+gcloud alpha network-services agent-gateways export "$GATEWAY_ID" \
+  --location="$REGION" --destination=/tmp/gw.yaml
+# Edit /tmp/gw.yaml: change locations/global -> locations/$REGION in registries,
+# and DELETE output-only fields (agentGatewayCard, createTime, updateTime, etag).
+sed -i "s|locations/global|locations/${REGION}|" /tmp/gw.yaml
+python3 - <<'EOF'
+import yaml
+d = yaml.safe_load(open('/tmp/gw.yaml'))
+for k in ('agentGatewayCard', 'createTime', 'updateTime', 'etag'):
+    d.pop(k, None)
+yaml.safe_dump(d, open('/tmp/gw.yaml', 'w'))
+EOF
+gcloud alpha network-services agent-gateways import "$GATEWAY_ID" \
+  --source=/tmp/gw.yaml --location="$REGION"
+```
+
 ```bash
 # 0.2 Any agent already bonded to a gateway in this project? (constraint #2)
 TOKEN=$(gcloud auth print-access-token)
@@ -311,6 +335,7 @@ remove the metadata block later to enforce.)
 | Runtime logs: `Failed to send request to https://...mtls.googleapis.com/...` | The mtls call failed *through* the gateway. NOT a transport bug — check, in order: (a) is that exact `.mtls.` hostname registered (Phase 1 permutations)? (b) does the IAP audit log show `granted: false` or `unregisteredResource` for it? (c) is the bound-token opt-out env var REALLY `false` in the deployed env (one var per line — see the corrupted-.env trap below)? |
 | Deployed env shows two variables fused into one value (e.g. `"value": "falseGOOGLE_API_USE_CLIENT_CERTIFICATE=false"`) | `.env` line corruption — usually `echo >>` onto a file whose last line lacked a trailing newline. Rewrite `.env` with one `KEY=value` per line and redeploy; this silently disables the opt-out and re-enables bound tokens. |
 | Gateway log shows `CONNECT` to `240.0.0.x` matched by `default_denied` | **Ignorable outer-tunnel records** (per the official demo's field manual) — the mTLS tunnel to the gateway itself. Do not treat as denials; exclude with `-httpRequest.requestMethod="CONNECT"` and judge from the IAP audit log. |
+| IAP audit log permanently EMPTY while all egress fails with assorted TLS/network errors | Two gateway-level misconfigs to check (Phase 0/5): (1) `registries:` points at `locations/global` instead of the regional registry — fix via export/edit/import (see Phase 0); (2) no authz policy targets the gateway — attach the IAP extension + policy (see Phase 5). Both make the proxy default-deny before IAP ever runs. |
 | `401 Unauthorized` from `bigquery.googleapis.com/mcp` | Certificate-bound token rejection — keep `GOOGLE_API_PREVENT_AGENT_TOKEN_SHARING_FOR_GCP_SERVICES=false` in `.env` (ships as env var; the official gateway sample sets it too). |
 | Deploy fails with pydantic `ValidationError` on `agent_gateway_config` | Deploy venv has `google-cloud-aiplatform < 1.148.0` — `pip install -r bq_analyst/requirements.txt --upgrade`. |
 | `Invalid choice: 'agent-gateways'` / missing `--mcp-server` flags | gcloud too old — needs ≥ 570.0.0 (`gcloud components update`). |

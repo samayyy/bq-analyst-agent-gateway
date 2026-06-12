@@ -49,7 +49,12 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 
 section "4. AUTHZ EXTENSIONS (IAP / Model Armor callouts; check iamEnforcementMode DRY_RUN vs absent=ENFORCE)"
 curl -s -H "Authorization: Bearer $TOKEN" \
-  "https://serviceextensions.googleapis.com/v1alpha1/projects/${PROJECT_ID}/locations/${REGION}/authzExtensions" >> "$OUT" 2>&1
+  "https://networkservices.googleapis.com/v1alpha1/projects/${PROJECT_ID}/locations/${REGION}/authzExtensions" >> "$OUT" 2>&1
+
+section "4b. GATEWAY REGISTRY SCOPE CHECK (Agent Runtime gateways must reference the REGIONAL registry, locations/REGION — locations/global is for Gemini Enterprise and default-denies everything registered regionally)"
+gcloud alpha network-services agent-gateways describe "$GATEWAY_ID" --location="$REGION" --project="$PROJECT_ID" \
+  --format="value(registries)" >> "$OUT" 2>&1
+echo "expected: //agentregistry.googleapis.com/projects/${PROJECT_ID}/locations/${REGION}" >> "$OUT"
 
 section "5. REGISTRY: registered endpoints/mcp-servers mentioning our critical hostnames"
 {
