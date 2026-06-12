@@ -255,6 +255,52 @@ Success = the smoke test answers AND the IAP audit log shows
 `granted: true` entries for the BigQuery destination with your agent's
 `principal://...` as `principalSubject`.
 
+## Phase 5 — One-shot diagnostics (when anything fails)
+
+Stop debugging one command at a time — collect every signal at once and read
+the report top to bottom:
+
+```bash
+./scripts/diagnose_gateway.sh "$PROJECT_ID" "$REGION" "$AGENT_ENGINE_ID" "$GATEWAY_ID"
+```
+
+How to read it: §3 empty → **no authz policy targets the gateway** (demo
+known-issue #4: the IAP extension may exist but is not attached — everything
+is denied at the proxy and §7 will be empty too). §6 missing the agent's
+`principal://` under `roles/iap.egressor` → grant didn't land (re-run Phase 3
+with gcloud ≥ 570). §7 `granted: false` → grant/principal mismatch; §7 label
+`unregisteredResource` → register that exact hostname. §8 shows the inner
+requests' status + URL for anything denied before/without IAP.
+
+If §3 IS empty, attach IAP to the gateway (from the official demo):
+
+```bash
+cat > /tmp/iap-authz-extension.yaml <<YAML
+name: agent-gateway-iap-authz
+service: iap.googleapis.com
+failOpen: true
+timeout: 1s
+metadata:
+  iamEnforcementMode: "DRY_RUN"
+YAML
+gcloud beta service-extensions authz-extensions import agent-gateway-iap-authz \
+  --source=/tmp/iap-authz-extension.yaml --location="$REGION" --project="$PROJECT_ID"
+
+curl -fsS -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+  -H "Content-Type: application/json" \
+  -X POST "https://networksecurity.googleapis.com/v1alpha1/projects/${PROJECT_ID}/locations/${REGION}/authzPolicies?authz_policy_id=agent-gateway-iap-policy" \
+  -d '{
+    "name": "agent-gateway-iap-policy",
+    "policyProfile": "REQUEST_AUTHZ",
+    "action": "CUSTOM",
+    "target": {"resources": ["projects/'"${PROJECT_ID}"'/locations/'"${REGION}"'/agentGateways/'"${GATEWAY_ID}"'"]},
+    "customProvider": {"authzExtension": {"resources": ["projects/'"${PROJECT_ID}"'/locations/'"${REGION}"'/authzExtensions/agent-gateway-iap-authz"]}}
+  }'
+```
+
+(`DRY_RUN` = decisions logged but not enforced — the safe onboarding mode;
+remove the metadata block later to enforce.)
+
 ## Troubleshooting
 
 | Symptom | Cause / fix |
@@ -272,6 +318,7 @@ Success = the smoke test answers AND the IAP audit log shows
 | MCP session dies at initialize although tools are allowed | A custom ALLOW `httpRules` policy on the gateway lacks `baseProtocolMethodsOption: MATCH_BASE_PROTOCOL_METHODS`. |
 | 400 when granting `principalSet://` per-mcp-server | Expected — IAP only accepts single-agent `principal://` at that scope. |
 | Startup fails: `Failed to convert project number to project ID` / `Assembly Service failed to initialize` | Agent identity lacks `roles/browser` (`resourcemanager.projects.get` during SDK init) — included in the updated grant script; re-run it. |
+| Runtime stderr: `ssl_transport_security.cc ... CERTIFICATE_VERIFY_FAILED: self signed certificate in certificate chain`, then `create_session` returns `FAILED_PRECONDITION: Reasoning Engine Execution failed` | **An egress denial in TLS costume.** The runtime wrapper's `set_up()` makes an unconditional gRPC call to `cloudresourcemanager.googleapis.com` (`AdkApp.project_id()` → `get_project`); when the gateway DENIES a destination it presents its own (self-signed) cert, which gRPC's baked-in roots reject; the failure escapes the wrapper's exception handler and kills startup. Allowed traffic passes with normal public certs (the official demo makes this same call successfully). Fix the AUTHORIZATION, not TLS: run `scripts/diagnose_gateway.sh` and check §3 (authz policy targeting the gateway exists?), §6 (egressor binding present?), §5 (cloudresourcemanager registered incl. `-mtls`?), §7 (IAP verdicts). |
 | Gateway log shows only `CONNECT` entries | Those are outer tunnel records, NOT authz decisions — exclude them (`-httpRequest.requestMethod="CONNECT"`) and read the IAP audit log instead (Phase 4). |
 | IAP audit shows denial but the binding looks correct | Check Principal Access Boundary policies (`gcloud iam principal-access-boundary-policies list --organization=ORG_ID --location=global`) — PAB overrides IAM Allow. |
 
