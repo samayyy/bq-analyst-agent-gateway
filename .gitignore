@@ -1,0 +1,8 @@
+# Local environment - copy bq_analyst/.env.example to bq_analyst/.env instead
+bq_analyst/.env
+
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+bq_analyst_tmp*/
