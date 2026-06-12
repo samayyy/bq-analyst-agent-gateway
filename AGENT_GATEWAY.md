@@ -136,6 +136,16 @@ in Phase 4, then register exactly those.)
 
 ## Phase 2 — Deploy the agent with the gateway binding
 
+**Pre-flight check** — the gateway config is validated client-side by the SDK
+in your venv, so a stale venv fails with
+`AgentEngineConfig ... Extra inputs are not permitted`. Verify first:
+
+```bash
+pip install --upgrade -r bq_analyst/requirements.txt
+python -c "from vertexai import types; print('agent_gateway_config' in types.AgentEngineConfig.model_fields)"
+# must print: True
+```
+
 Edit `bq_analyst/.agent_engine_config.json` and replace the placeholder:
 
 ```json
