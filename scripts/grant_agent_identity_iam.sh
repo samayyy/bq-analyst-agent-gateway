@@ -40,17 +40,34 @@ echo "Granting roles to agent identity:"
 echo "  ${PRINCIPAL}"
 echo
 
-# mcp.toolUser     -> call managed MCP server tools (mcp.tools.call)
-# bigquery.jobUser -> run query jobs
-# bigquery.dataViewer -> read table data/metadata
-# aiplatform.user  -> call Gemini on the Vertex global endpoint
-# serviceusage.serviceUsageConsumer -> bill/quota via x-goog-user-project
+# Data-plane roles:
+#   mcp.toolUser     -> call managed MCP server tools (mcp.tools.call)
+#   bigquery.jobUser -> run query jobs
+#   bigquery.dataViewer -> read table data/metadata
+#   aiplatform.user  -> call Gemini on the Vertex global endpoint
+#   serviceusage.serviceUsageConsumer -> bill/quota via x-goog-user-project
+# Baseline runtime roles (from the official Agent Gateway demo's agent-engine
+# module; several are REQUIRED for startup on gateway-bound deployments):
+#   browser            -> resourcemanager.projects.get during SDK init
+#                         (without it: "Failed to convert project number to project ID")
+#   aiplatform.expressUser -> runtime inference/sessions/memory
+#   agentregistry.viewer + cloudapiregistry.viewer -> registry discovery/reads
+#   logging.logWriter / monitoring.metricWriter / cloudtrace.agent /
+#   telemetry.writer   -> observability export
 for ROLE in \
   roles/mcp.toolUser \
   roles/bigquery.jobUser \
   roles/bigquery.dataViewer \
   roles/aiplatform.user \
-  roles/serviceusage.serviceUsageConsumer; do
+  roles/serviceusage.serviceUsageConsumer \
+  roles/browser \
+  roles/aiplatform.expressUser \
+  roles/agentregistry.viewer \
+  roles/cloudapiregistry.viewer \
+  roles/logging.logWriter \
+  roles/monitoring.metricWriter \
+  roles/cloudtrace.agent \
+  roles/telemetry.writer; do
   echo ">> ${ROLE}"
   gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
     --member="${PRINCIPAL}" \

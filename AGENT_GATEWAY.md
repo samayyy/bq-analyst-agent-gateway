@@ -111,37 +111,23 @@ the agent's startup and model calls also egress through the gateway, so their
 hostnames must be registered + authorized or the agent never starts. Register
 each as an endpoint (hostname matching is EXACT):
 
-Hostname matching is EXACT, and the runtime auto-switches Google SDK calls to
-the `.mtls.googleapis.com` endpoint variants when Agent Identity certificates
-are present — so register the **full permutation set** per service (this is
-what Google's own gateway demo terraform does):
+Hostname matching is EXACT, and the SDK may dial any of FIVE permutations of
+each API hostname (base, mTLS, locational, locational-mTLS, regional REP)
+depending on version/region/mTLS state. Register the full set — this mirrors
+the official demo (`GoogleCloudPlatform/cloud-networking-solutions` →
+`demos/agent-gateway`), whose field manual calls hostname permutations "the
+single biggest gotcha":
 
 ```bash
-register() {
-  gcloud alpha agent-registry services create "$1" \
-    --project="$PROJECT_ID" --location="$REGION" \
-    --display-name="Endpoint $2" \
-    --endpoint-spec-type=no-spec \
-    --interfaces="url=$2,protocolBinding=JSONRPC" || true
-}
-for SVC in aiplatform oauth2 iamcredentials logging monitoring telemetry \
-           cloudtrace cloudresourcemanager iap www bigquery agentregistry; do
-  register "ep-${SVC}"      "https://${SVC}.googleapis.com"
-  register "ep-${SVC}-mtls" "https://${SVC}.mtls.googleapis.com"
-done
-# Regional variants the runtime dials (sessions API etc.):
-for SVC in aiplatform agentregistry; do
-  register "ep-${REGION}-${SVC}"      "https://${REGION}-${SVC}.googleapis.com"
-  register "ep-${REGION}-${SVC}-mtls" "https://${REGION}-${SVC}.mtls.googleapis.com"
-done
+./scripts/register_gateway_endpoints.sh "$PROJECT_ID" "$REGION"
 ```
 
-(`www` covers the `auth_diagnostics` tokeninfo call. If IAP is in DRY_RUN, you
-can instead deploy first and read the would-be-denied hostnames from the logs
-in Phase 4, then register exactly those. Either way, after deploying, iterate:
-smoke test → gateway log names any still-blocked hostname → register it →
-retry. The registry-wide `roles/iap.egressor` grant from Phase 3 covers newly
-registered entries automatically.)
+The script registers ~15 services × 5 permutations, idempotently (existing
+entries are skipped). After deploying, iterate: smoke test → IAP audit log
+names any still-unregistered hostname (`audited_resource_name:
+unregisteredResource`) → register it → retry. The registry-wide
+`roles/iap.egressor` grant from Phase 3 covers newly registered entries
+automatically.
 
 ## Phase 2 — Deploy the agent with the gateway binding
 
@@ -241,19 +227,33 @@ use the single-agent `principal://` there.
 ```bash
 PROJECT_ID="$PROJECT_ID" LOCATION="$REGION" \
   python scripts/remote_smoke_test.py "$AGENT_ENGINE_ID"
-
-# Gateway data-plane logs (hostname, matched registry entry, MCP tool name):
-gcloud logging read 'resource.type="networkservices.googleapis.com/Gateway"
-  resource.labels.gateway_name="'$GATEWAY_ID'"' \
-  --project="$PROJECT_ID" --limit=30 --freshness=15m
-
-# IAP allow/deny decisions (denials say: "Egress request is not authorized"):
-gcloud logging read 'protoPayload.serviceName="iap.googleapis.com" severity>=WARNING' \
-  --project="$PROJECT_ID" --limit=20 --freshness=15m
 ```
 
-Success = the smoke test answers AND the gateway log shows the
-`bigquery.googleapis.com` traffic with your agent's principal.
+**How to read the logs** (from the official demo's debugging playbook —
+IMPORTANT: ignore `requestMethod=CONNECT` entries, they're outer tunnel
+records, not authz decisions):
+
+```bash
+# 1. IAP allow/deny decisions — THE authoritative signal. granted true/false,
+#    the caller principal, and the resolved registry resource. If
+#    labels."iap.googleapis.com/audited_resource_name" = "unregisteredResource"
+#    the hostname isn't registered (exact-match miss) — register it (Phase 1).
+gcloud logging read 'protoPayload.serviceName="iap.googleapis.com"
+  protoPayload.authorizationInfo.permission="iap.webServiceVersions.egressViaIAP"' \
+  --project="$PROJECT_ID" --limit=20 --freshness=15m
+
+# 2. Gateway proxy decisions for calls IAP never saw (denied before IAP):
+gcloud logging read 'jsonPayload.@type="type.googleapis.com/google.cloud.loadbalancing.type.LoadBalancerLogEntry"
+  -httpRequest.requestMethod="CONNECT"
+  resource.labels.gateway_type="SECURE_WEB_GATEWAY"' \
+  --project="$PROJECT_ID" --limit=20 --freshness=15m
+# Key fields: httpRequest.status, httpRequest.requestUrl (exact destination),
+# jsonPayload.authzPolicyInfo.policies.result
+```
+
+Success = the smoke test answers AND the IAP audit log shows
+`granted: true` entries for the BigQuery destination with your agent's
+`principal://...` as `principalSubject`.
 
 ## Troubleshooting
 
@@ -268,6 +268,14 @@ Success = the smoke test answers AND the gateway log shows the
 | Second agent fails to bind: `Internal error encountered` | Known preview issue: one bonded engine per project. Delete the other bonded engine or use another project; confirm status with your preview contact. |
 | MCP session dies at initialize although tools are allowed | A custom ALLOW `httpRules` policy on the gateway lacks `baseProtocolMethodsOption: MATCH_BASE_PROTOCOL_METHODS`. |
 | 400 when granting `principalSet://` per-mcp-server | Expected — IAP only accepts single-agent `principal://` at that scope. |
+| Startup fails: `Failed to convert project number to project ID` / `Assembly Service failed to initialize` | Agent identity lacks `roles/browser` (`resourcemanager.projects.get` during SDK init) — included in the updated grant script; re-run it. |
+| Gateway log shows only `CONNECT` entries | Those are outer tunnel records, NOT authz decisions — exclude them (`-httpRequest.requestMethod="CONNECT"`) and read the IAP audit log instead (Phase 4). |
+| IAP audit shows denial but the binding looks correct | Check Principal Access Boundary policies (`gcloud iam principal-access-boundary-policies list --organization=ORG_ID --location=global`) — PAB overrides IAM Allow. |
+
+**Reference implementation:** the official working demo is
+[`GoogleCloudPlatform/cloud-networking-solutions` → `demos/agent-gateway`](https://github.com/GoogleCloudPlatform/cloud-networking-solutions/tree/main/demos/agent-gateway)
+— its `.agents/skills/agent-platform-debugger/references/` directory (field
+manual, known issues) is the best debugging companion for this stack.
 
 ## Confirm with your Google preview contact (not publicly documented)
 
