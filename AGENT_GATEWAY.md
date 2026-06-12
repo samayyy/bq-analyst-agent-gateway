@@ -111,28 +111,37 @@ the agent's startup and model calls also egress through the gateway, so their
 hostnames must be registered + authorized or the agent never starts. Register
 each as an endpoint (hostname matching is EXACT):
 
+Hostname matching is EXACT, and the runtime auto-switches Google SDK calls to
+the `.mtls.googleapis.com` endpoint variants when Agent Identity certificates
+are present — so register the **full permutation set** per service (this is
+what Google's own gateway demo terraform does):
+
 ```bash
+register() {
+  gcloud alpha agent-registry services create "$1" \
+    --project="$PROJECT_ID" --location="$REGION" \
+    --display-name="Endpoint $2" \
+    --endpoint-spec-type=no-spec \
+    --interfaces="url=$2,protocolBinding=JSONRPC" || true
+}
 for SVC in aiplatform oauth2 iamcredentials logging monitoring telemetry \
-           cloudtrace cloudresourcemanager iap www bigquery; do
-  gcloud alpha agent-registry services create "ep-${SVC}" \
-    --project="$PROJECT_ID" --location="$REGION" \
-    --display-name="Endpoint ${SVC}.googleapis.com" \
-    --endpoint-spec-type=no-spec \
-    --interfaces="url=https://${SVC}.googleapis.com,protocolBinding=JSONRPC" || true
+           cloudtrace cloudresourcemanager iap www bigquery agentregistry; do
+  register "ep-${SVC}"      "https://${SVC}.googleapis.com"
+  register "ep-${SVC}-mtls" "https://${SVC}.mtls.googleapis.com"
 done
-# Also the regional variants the runtime dials:
-for HOST in "$REGION-aiplatform" "$REGION-agentregistry" agentregistry; do
-  gcloud alpha agent-registry services create "ep-${HOST//./-}" \
-    --project="$PROJECT_ID" --location="$REGION" \
-    --display-name="Endpoint ${HOST}.googleapis.com" \
-    --endpoint-spec-type=no-spec \
-    --interfaces="url=https://${HOST}.googleapis.com,protocolBinding=JSONRPC" || true
+# Regional variants the runtime dials (sessions API etc.):
+for SVC in aiplatform agentregistry; do
+  register "ep-${REGION}-${SVC}"      "https://${REGION}-${SVC}.googleapis.com"
+  register "ep-${REGION}-${SVC}-mtls" "https://${REGION}-${SVC}.mtls.googleapis.com"
 done
 ```
 
 (`www` covers the `auth_diagnostics` tokeninfo call. If IAP is in DRY_RUN, you
 can instead deploy first and read the would-be-denied hostnames from the logs
-in Phase 4, then register exactly those.)
+in Phase 4, then register exactly those. Either way, after deploying, iterate:
+smoke test → gateway log names any still-blocked hostname → register it →
+retry. The registry-wide `roles/iap.egressor` grant from Phase 3 covers newly
+registered entries automatically.)
 
 ## Phase 2 — Deploy the agent with the gateway binding
 
@@ -252,6 +261,7 @@ Success = the smoke test answers AND the gateway log shows the
 |---|---|
 | Tool error, IAP log says `Egress request is not authorized` | Missing/stale `roles/iap.egressor` (re-run Phase 3 with the CURRENT engine ID) or the exact hostname isn't registered (Phase 1 — matching is exact, register the precise host from the gateway log). |
 | Agent never becomes ready / startup failures after binding | IAP is ENFORCING and bootstrap hostnames aren't registered+authorized (Phase 1). Ask your preview contact to flip the IAP extension to `iamEnforcementMode: DRY_RUN` for onboarding. |
+| Runtime logs: `Failed to send request to https://...mtls.googleapis.com/...` (retrying aiohttp errors, e.g. on the sessions API) | The SDKs auto-switch to `.mtls.` endpoint variants (Agent Identity certs present) and that exact hostname isn't registered — run the Phase 1 permutation loop (includes `-mtls` entries), then retry. |
 | `401 Unauthorized` from `bigquery.googleapis.com/mcp` | Certificate-bound token rejection — keep `GOOGLE_API_PREVENT_AGENT_TOKEN_SHARING_FOR_GCP_SERVICES=false` in `.env` (ships as env var; the official gateway sample sets it too). |
 | Deploy fails with pydantic `ValidationError` on `agent_gateway_config` | Deploy venv has `google-cloud-aiplatform < 1.148.0` — `pip install -r bq_analyst/requirements.txt --upgrade`. |
 | `Invalid choice: 'agent-gateways'` / missing `--mcp-server` flags | gcloud too old — needs ≥ 570.0.0 (`gcloud components update`). |
