@@ -148,10 +148,20 @@ python -c "from vertexai import types; print('agent_gateway_config' in types.Age
 
 If it prints `False` even after the install (common in Cloud Shell): a stale
 `google-cloud-aiplatform` in `~/.local/lib/.../site-packages` is shadowing the
-venv. Fix: create a fresh ISOLATED venv in this repo (`deactivate &&
-python3 -m venv .venv && source .venv/bin/activate && pip install -r
-bq_analyst/requirements.txt`); verify `echo $PYTHONPATH` is empty and
-`python -c "import vertexai; print(vertexai.__file__)"` points inside `.venv`.
+venv — usually because `PYTHONPATH` is exported in the shell profile
+(PYTHONPATH entries beat venv site-packages). Diagnose with
+`python -c "import vertexai; print(vertexai.__file__)"` (points at `~/.local`)
+and `echo $PYTHONPATH`. Fix: `unset PYTHONPATH` (and remove the export from
+`~/.bashrc`/`~/.profile`). Guaranteed fix either way — upgrade the `~/.local`
+copies at the source so whichever copy wins supports the field:
+
+```bash
+deactivate
+python3 -m pip install --user --upgrade \
+  "google-adk[a2a,mcp]==2.2.0" "google-cloud-aiplatform[agent_engines]>=1.148.1"
+source .venv/bin/activate
+# re-run the True/False check before deploying
+```
 
 Edit `bq_analyst/.agent_engine_config.json` and replace the placeholder:
 
