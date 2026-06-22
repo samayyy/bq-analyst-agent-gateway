@@ -1,61 +1,76 @@
-# Delete the orphaned reasoning engines holding the gateway
+# Delete the orphaned reasoning engines (researched / verified)
 
-These are the engine IDs the gateway-delete error named as still using
-`my-bank-gateway-01`. Goal: delete any that are still live so the gateway frees
-up and a new bond can succeed.
+## What I verified
 
-## Setup (same shell for all steps)
+- **gcloud cannot do this** — `gcloud ... ai reasoning-engines` does not exist in
+  the installed CLI (558.0.0). REST or SDK only.
+- **Correct delete shape** (confirmed in google-cloud-aiplatform 1.157.0 source):
+  `DELETE .../v1beta1/projects/PROJECT/locations/REGION/reasoningEngines/{id}?force=true`
+  — `force` is a query param, `v1beta1` is the right version, `force=true`
+  cascades child resources (sessions/memory). So the earlier curl was correct,
+  and a `404` genuinely means the engine is already gone.
+- **Why prefer the SDK script below over curl:** Cloud Shell has repeatedly
+  line-wrapped the long curl URL (the first delete broke on a mid-ID wrap).
+  `scripts/delete_engines.py` uses the SDK (`client.agent_engines.delete`),
+  which builds the exact URL/version/force internally — nothing to wrap — and
+  lists what *actually* exists straight from the API.
+
+## Setup
 
 ```bash
-export TOKEN=$(gcloud auth print-access-token)
-export BASE="https://us-central1-aiplatform.googleapis.com/v1beta1/projects/gm-test-337806/locations/us-central1"
+cd ~/agent-gw/bq-analyst-agent-gateway   # or wherever the repo + .venv live
+source .venv/bin/activate
+export PROJECT_ID="gm-test-337806"
+export LOCATION="us-central1"
 ```
 
-> Re-run the TOKEN line if you start getting 401 (tokens expire ~1h).
-
-## Step 1 — Check which engines still exist (200 = live, 404 = already gone)
+## Step 1 — Authoritative list of ALL engines (incl. gateway-bound/hidden)
 
 ```bash
-for ID in 9079862129930010624 1635411945886580736 3216175415093624832; do
-  echo -n "$ID -> "
-  curl -s -o /dev/null -w "%{http_code}\n" -H "Authorization: Bearer $TOKEN" "$BASE/reasoningEngines/${ID}"
-done
+python scripts/delete_engines.py list
 ```
 
-## Step 2 — Force-delete all three (skips the 404s harmlessly)
+This is the real source of truth — more reliable than the console (which hides
+gateway-bound engines) or a hand-written curl list call.
+
+## Step 2 — Delete the three referenced engines (force; 404s are safe skips)
 
 ```bash
-for ID in 9079862129930010624 1635411945886580736 3216175415093624832; do
-  echo "=== Deleting $ID ==="
-  curl -s -X DELETE -H "Authorization: Bearer $TOKEN" "$BASE/reasoningEngines/${ID}?force=true"
-  echo
-done
+python scripts/delete_engines.py delete 9079862129930010624 1635411945886580736 3216175415093624832
 ```
 
-- A live engine returns an operation JSON (`"name": ".../operations/..."`).
-- An already-gone engine returns `404 "The ReasoningEngine does not exist."`
-  — harmless, means it was already deleted.
+Output per ID:
+- `delete requested (force=True)` -> it was **live**; now deleting (good — a
+  live engine was holding the one-bond slot).
+- `already gone (404)` -> phantom; nothing to delete.
+- `ERROR: ...` -> paste it; that's a real problem (perms / wrong project).
 
-## Step 3 — Wait ~2 min, then re-check (want all 404)
+## Step 3 — Wait ~2 min, re-list (should be empty or shrunk)
 
 ```bash
-for ID in 9079862129930010624 1635411945886580736 3216175415093624832; do
-  echo -n "$ID -> "
-  curl -s -o /dev/null -w "%{http_code}\n" -H "Authorization: Bearer $TOKEN" "$BASE/reasoningEngines/${ID}"
-done
+python scripts/delete_engines.py list
 ```
 
-## Step 4 — Try the gateway delete again (or just redeploy)
+## Step 4 — Then either delete the old gateway or just redeploy
 
 ```bash
-# Old gateway should now delete if the references were live engines:
 gcloud alpha network-services agent-gateways delete my-bank-gateway-01 --location=us-central1 --quiet
+# then redeploy fresh against gw02 -> DEPLOY_NEW_GATEWAY.md
 ```
 
-Then redeploy fresh against gw02 — see **DEPLOY_NEW_GATEWAY.md**.
+## Fallback (no venv / SDK available) — raw REST, single line each
 
-## If everything was already 404 in Step 1
+```bash
+TOKEN=$(gcloud auth print-access-token)
+BASE="https://us-central1-aiplatform.googleapis.com/v1beta1/projects/gm-test-337806/locations/us-central1"
+curl -s -X DELETE -H "Authorization: Bearer $TOKEN" "$BASE/reasoningEngines/9079862129930010624?force=true"; echo
+curl -s -X DELETE -H "Authorization: Bearer $TOKEN" "$BASE/reasoningEngines/3216175415093624832?force=true"; echo
+curl -s -X DELETE -H "Authorization: Bearer $TOKEN" "$BASE/reasoningEngines/1635411945886580736?force=true"; echo
+```
+(Keep each curl on ONE line — never let the terminal wrap the URL mid-ID.)
 
-The references are phantom (deleted engines the gateway still lists). You cannot
-delete them — there is nothing there. That is the dangling-bond deadlock; see
-**ESCALATION.md** to hand it to the Google preview team.
+## If every ID is `already gone (404)` and the gateway still won't delete
+
+The references are phantom (deleted engines the gateway still lists) — the
+dangling-bond deadlock. No client-side command releases it. See
+**ESCALATION.md**.
