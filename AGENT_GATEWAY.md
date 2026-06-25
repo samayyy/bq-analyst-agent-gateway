@@ -1,9 +1,33 @@
 # Routing this agent's MCP traffic through Agent Gateway (Agent-to-Anywhere)
 
+> ## ⚠️ STATUS (June 25, 2026): NOT GA — binding needs per-project early access
+> Despite third-party claims of GA, the **Agent-Engine↔Agent-Gateway binding**
+> still requires a **per-project early-access entitlement**. Verified empirically:
+> in a project *without* it, `adk deploy` creates the engine, then the bind step
+> fails and rolls back:
+> ```
+> 400 FAILED_PRECONDITION: Agent Engine integration with Agent Gateway
+> requires additional early-access activation for this Google Cloud project.
+> ```
+> The gateway/registry/authz APIs themselves may be allowlisted (you can create
+> all the infra) — but **binding an agent is a separate gate**. What genuinely
+> went GA (June 18, 2026) is **Agent Registry** and **Agent Observability**, not
+> the gateway egress path. Treat binding as irreversible; the one-gateway-per-
+> project+region limit and the dangling-reference delete-deadlock still apply.
+>
+> **To resume:** have your Google contact enable the *"Agent Engine + Agent
+> Gateway integration"* early-access entitlement for your project, then run the
+> runbook below. All the infra steps (gateway, registry, IAP authz) work today;
+> only the final deploy/bind is gated.
+>
+> **GA-era note:** the IAP authz extension now requires
+> `metadata.iapPolicyVersion: "V1"` (in addition to `iamEnforcementMode`) —
+> already reflected in Phase 5 below.
+
 This branch binds the agent to a Google Cloud **Agent Gateway** (Private
-Preview) so all of its outbound MCP/tool traffic is governed by the gateway:
-default-deny egress, per-tool IAM authorization (IAP for Agents), full traffic
-logging, and optional Model Armor screening.
+Preview / early-access) so all of its outbound MCP/tool traffic is governed by
+the gateway: default-deny egress, per-tool IAM authorization (IAP for Agents),
+full traffic logging, and optional Model Armor screening.
 
 Follow [DEPLOYMENT.md](DEPLOYMENT.md) first for the baseline (APIs, IAM,
 deploy basics) — this document covers only what Agent Gateway adds.
@@ -299,16 +323,14 @@ requests' status + URL for anything denied before/without IAP.
 If §3 IS empty, attach IAP to the gateway (from the official demo):
 
 ```bash
-cat > /tmp/iap-authz-extension.yaml <<YAML
-name: agent-gateway-iap-authz
-service: iap.googleapis.com
-failOpen: true
-timeout: 1s
-metadata:
-  iamEnforcementMode: "DRY_RUN"
-YAML
-gcloud beta service-extensions authz-extensions import agent-gateway-iap-authz \
-  --source=/tmp/iap-authz-extension.yaml --location="$REGION" --project="$PROJECT_ID"
+# NOTE: metadata now REQUIRES iapPolicyVersion: "V1" (literal). The older
+# gcloud `import` from a YAML lacking it silently no-ops — prefer the REST
+# create below, which surfaces the real error.
+TOKEN=$(gcloud auth print-access-token)
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  "https://networkservices.googleapis.com/v1beta1/projects/${PROJECT_ID}/locations/${REGION}/authzExtensions?authzExtensionId=agent-gateway-iap-authz" \
+  -d '{"service":"iap.googleapis.com","failOpen":true,"timeout":"1s","metadata":{"iamEnforcementMode":"DRY_RUN","iapPolicyVersion":"V1"}}'
+# poll the returned operation until done=true before creating the policy.
 
 curl -fsS -H "Authorization: Bearer $(gcloud auth print-access-token)" \
   -H "Content-Type: application/json" \
